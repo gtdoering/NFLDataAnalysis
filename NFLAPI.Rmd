@@ -1,0 +1,260 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+#install.packages("nflfastR")
+```
+
+```{r}
+misery <- function(wins, total_yards){
+  misery <- vector()
+  for (i in 1:length(wins)) {
+    
+    if(total_yards[i] > 6653){
+      misery[i] = 0
+    }else{
+      misery[i] = 3 - ((total_yards[i]-4000)/2653)^4 * 3
+    }
+    
+    if(wins[i] > 16){
+      misery[i] = misery[i] 
+    }else{
+      misery[i] = misery[i] + (7 - (wins[i] / 16) * 7)
+    }
+  }
+
+  signif(misery, 3)
+}
+```
+This function creates a misery index for a team's season based off the amount of wins that the 
+team has and the yards that they compiled on offense. It is weighted more towards wins since that is 
+what gets fanse excited.
+
+```{r}
+library(nflfastR)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+pbp20 <- load_pbp(2020)
+#names(pbp20) 
+
+pbp20home <- pbp20 %>%
+  select(season, week, home_team, result) %>%
+  rename(team = home_team) %>% 
+  distinct(week, team, .keep_all = TRUE)
+
+pbp20away <- pbp20 %>%
+  select(season, week, away_team, result) %>%
+  rename(team = away_team) %>% 
+  mutate(result = -result) %>% 
+  distinct(week, team,.keep_all = TRUE)
+
+pbp20wins <- rbind(pbp20away,pbp20home) %>% 
+  mutate(win = case_when(
+    result > 0  ~ 1,
+    result < 0  ~ 0,
+    result == 0 ~ .5
+  )) %>% 
+  group_by(team) %>% 
+  summarise(wins = sum(win))
+  
+
+stats20 <- pbp20 %>% 
+  filter(!is.na(posteam)) %>% 
+  group_by(posteam) %>% 
+  rename(team = posteam) %>% 
+  summarise(passing_yards = sum(passing_yards, na.rm = TRUE),
+            rushing_yards = sum(rushing_yards, na.rm = TRUE)) 
+
+offense <- left_join(pbp20wins, stats20 )
+offense
+offense <- offense %>%
+  left_join(teams_colors_logos, by = c('team' = 'team_abbr')) %>% 
+  mutate(misery = misery(wins, passing_yards+rushing_yards))
+
+offense %>%
+  ggplot(aes(x = rushing_yards, y = passing_yards)) +
+  #horizontal line with mean passing yards
+  geom_hline(yintercept = mean(offense$passing_yards), color = "red", linetype = "dashed", alpha=0.5) +
+  #vertical line with mean rushing yards
+  geom_vline(xintercept =  mean(offense$rushing_yards), color = "red", linetype = "dashed", alpha=0.5) +
+  #add points for the teams with the right colors
+  #cex controls point size and alpha the transparency (alpha = 1 is normal)
+  geom_point(color = offense$team_color, cex= offense$wins, alpha = .6)+
+  #add names using ggrepel, which tries to make them not overlap
+  geom_text_repel(aes(label=paste(team, " Misery: ", misery))) +
+  #add a smooth line fitting cpoe + epa
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, method='lm')+
+  #titles and caption
+  labs(x = "Offensive Rushing Yards for 2020",
+       y = "Offensive Passing Yards for 2020",
+       title = "Offense Impact on Wins for 2020",
+       caption = "Data: @nflfastR") +
+  #uses the black and white ggplot theme
+  theme_bw() +
+  #center title with hjust = 0.5
+  theme(
+    plot.title = element_text(size = 14, hjust = 0.5, face = "bold")
+  ) +
+  #make ticks look nice
+  #if this doesn't work, `install.packages('scales')`
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10))
+```
+This chunk of code creates a ggplot for the 2020 season based off the amount of offense 
+that a team compiled. The size of the point corresponds to the amount of wins that the
+team got in the 2020 season. The label includes the misery score for the team based off
+their rushing and passing yards combined. The color of the point is also the team color.
+
+```{r}
+pbp <- load_pbp(1999:2020)
+#names(pbp20) 
+
+pbphome <- pbp %>%
+  select(season, week, home_team, result) %>%
+  rename(team = home_team) %>% 
+  distinct(week, team, season, .keep_all = TRUE)
+
+pbpaway <- pbp %>%
+  select(season, week, away_team, result) %>%
+  rename(team = away_team) %>% 
+  mutate(result = -result) %>% 
+  distinct(week, team, season, .keep_all = TRUE)
+
+pbpwins <- rbind(pbpaway,pbphome) %>% 
+  mutate(win = case_when(
+    result > 0  ~ 1,
+    result < 0  ~ 0,
+    result == 0 ~ .5
+  )) %>% 
+  group_by(team, season) %>% 
+  summarise(wins = sum(win))
+
+
+stats <- pbp %>% 
+  filter(!is.na(posteam)) %>% 
+  group_by(posteam, season) %>% 
+  rename(team = posteam) %>% 
+  summarise(passing_yards = sum(passing_yards, na.rm = TRUE),
+            rushing_yards = sum(rushing_yards, na.rm = TRUE)) 
+
+offense <- left_join(pbpwins, stats )
+offense <- offense %>%
+  left_join(teams_colors_logos, by = c('team' = 'team_abbr'))
+
+jaxoffense <- offense %>% 
+  filter(team == 'JAX') %>% 
+  mutate(misery = misery(wins, rushing_yards + passing_yards))
+
+
+jaxoffense %>%
+  ggplot(aes(x = rushing_yards, y = passing_yards)) +
+  #horizontal line with mean passing yards
+  geom_hline(yintercept = mean(jaxoffense$passing_yards), color = "red", linetype = "dashed", alpha=0.5) +
+  #vertical line with mean rushing yards
+  geom_vline(xintercept =  mean(jaxoffense$rushing_yards), color = "red", linetype = "dashed", alpha=0.5) +
+  #add points for the teams with the right colors
+  #cex controls point size and alpha the transparency (alpha = 1 is normal)
+  geom_point(color = "#008080",cex= jaxoffense$wins, alpha = .6)+
+  #add names using ggrepel, which tries to make them not overlap
+  geom_text_repel(aes(label=paste0(season," Misery: ",misery))) +
+  #add a smooth line fitting cpoe + epa
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, method='lm')+
+  #titles and caption
+  labs(x = "Offensive Rushing Yards",
+       y = "Offensive Passing Yards",
+       title = "JAX Offense Impact on Wins 1999:2020",
+       caption = "Data: @nflfastR") +
+  #uses the black and white ggplot theme
+  theme_bw() +
+  #center title with hjust = 0.5
+  theme(
+    plot.title = element_text(size = 14, hjust = 0.5, face = "bold")
+  ) +
+  #make ticks look nice
+  #if this doesn't work, `install.packages('scales')`
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) 
+```
+
+
+```{r}
+qbr_all <- load_pbp(1999:2020)
+
+qbr_all_filter <- qbr_all %>%
+  select(season, week, home_team, away_team, posteam, play_type, result, season_type, third_down_converted, third_down_failed,
+         incomplete_pass, interception, pass_attempt, pass_touchdown, complete_pass,passer_player_name,
+         passing_yards, pass, result, sack
+         ) %>%
+  mutate(result = case_when(
+    away_team == posteam  ~ -result,
+    home_team == posteam  ~ result)
+    ) %>%
+  filter(play_type %in% c("pass"), season_type == "REG") %>%
+  group_by(season, week, posteam) %>%
+  summarise(
+    pass_plays = n(),
+    sacks = sum(sack, na.rm = TRUE),
+    passes_attempted = sum(pass_attempt, na.rm = TRUE) - sacks,
+    incompletions = sum(incomplete_pass, na.rm = TRUE),
+    completions = passes_attempted - incompletions,
+    pass_touchdowns = sum(pass_touchdown, na.rm = TRUE),
+    passing_yards = sum(passing_yards, na.rm = TRUE),
+    interceptions = sum(interception, na.rm = TRUE),
+    third_down_converted = sum(third_down_converted, na.rm = TRUE),
+    third_down_failed = sum(third_down_failed, na.rm = TRUE),
+    third_down_conversion_rate = signif(third_down_converted/(third_down_failed + third_down_converted), 3),
+    result = unique(result)
+    ) %>%
+  mutate(win = case_when(
+    result > 0  ~ 1,
+    result < 0  ~ 0,
+    result == 0 ~ .5
+    )) %>%
+  mutate(a = ((completions/passes_attempted - .3) * 5),
+         b = ((passing_yards/passes_attempted - 3) * .25),
+         c = ((pass_touchdowns/passes_attempted) * 20),
+         d = (2.375 - (interceptions/passes_attempted * 25))
+         ) %>%
+  mutate(
+    a = case_when(
+    a >= 2.375 ~ 2.375,
+    a >= 0 ~ a,
+    a < 0 ~ 0
+    ), b = case_when(
+    b >= 2.375 ~ 2.375,
+    b >= 0 ~ b,
+    b < 0 ~ 0
+    ), c = case_when(
+    c >= 2.375 ~ 2.375,
+    c >= 0 ~ c,
+    c < 0 ~ 0
+    ), d = case_when(
+    d >= 2.375 ~ 2.375,
+    d >= 0 ~ d,
+    d < 0 ~ 0
+    ),
+    qbr = signif((a + b + c +d)/6 * 100,4),
+    win = as.logical(win),
+    season = as.factor(season)
+    ) %>%
+  select(-c(a,b,c,d)) %>%
+  filter(!is.na(win))
+
+ggplot(qbr_all_filter, aes(x=season, y= qbr, fill=win)) +
+  geom_boxplot(position = position_dodge(0.9) ) +
+  labs(title = "QBR For Winning and Losing",
+       x = "Season",
+       y = "QBR") +
+  scale_fill_discrete(name = "Result", labels = c("Lose", "Win")) +
+  theme_minimal() +
+  geom_hline(yintercept= mean(qbr_all_filter$qbr),color = "black", linetype = "dashed", alpha=0.5) +
+  geom_hline(yintercept = mean(qbr_all_filter$qbr[qbr_all_filter$win == TRUE]), color = "#00BFC4", size = 1, linetype = "dashed") +
+  geom_hline(yintercept = mean(qbr_all_filter$qbr[qbr_all_filter$win == FALSE]), color = "#F8766D", size = 1, linetype = "dashed")
+
+```
+
