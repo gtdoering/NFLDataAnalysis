@@ -1,11 +1,15 @@
-install.packages("nflfastR")
-
 library(tidyverse)
 library(ggrepel)
 library(ggimage)
 library(nflfastR)
-
+library(zoo)
+library(gains)
+library(faraway)
+source("functions/qbr.R")
+source("functions/misery.R")
 options(scipen = 9999)
+
+
 data <- load_pbp(2019)
 View(data)
 
@@ -229,27 +233,6 @@ jaxoffense %>%
   scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
   scale_x_continuous(breaks = scales::pretty_breaks(n = 10))
 
-misery <- function(wins, total_yards){
-  misery <- vector()
-  for (i in 1:length(wins)) {
-    
-    if(total_yards[i] > 6653){
-      misery[i] = 0
-    }else{
-      misery[i] = 3 - (total_yards[i]-4400)/2653 * 3
-    }
-    
-    if(wins[i] > 16){
-      misery[i] = misery[i] 
-    }else{
-      misery[i] = misery[i] + (7 - (wins[i] / 16)*7)
-    }
-  }
-
-  signif(misery, 3)
-}
-
-misery(wins = jaxoffense$wins, total_yards = jaxoffense$passing_yards + jaxoffense$rushing_yards)
 
 ####### GAME BY GAME QBR AND WIN CHANCE ########
 qbr_2020 <- load_pbp(2020)
@@ -284,40 +267,20 @@ qbr_2020_JAX <- qbr_2020 %>%
     result > 0  ~ 1,
     result < 0  ~ 0,
     result == 0 ~ .5
-    )) %>%
-  mutate(a = ((completions/passes_attempted - .3) * 5),
-         b = ((passing_yards/passes_attempted - 3) * .25),
-         c = ((pass_touchdowns/passes_attempted) * 20),
-         d = (2.375 - (interceptions/passes_attempted * 25))
-                       ) %>%
-  mutate(
-    a = case_when(
-    a >= 2.375 ~ 2.375,
-    a >= 0 ~ a,
-    a < 0 ~ 0
-    ), b = case_when(
-    b >= 2.375 ~ 2.375,
-    b >= 0 ~ b,
-    b < 0 ~ 0
-    ), c = case_when(
-    c >= 2.375 ~ 2.375,
-    c >= 0 ~ c,
-    c < 0 ~ 0
-    ), d = case_when(
-    d >= 2.375 ~ 2.375,
-    d >= 0 ~ d,
-    d < 0 ~ 0
     ),
-    qbr = signif((a + b + c +d)/6 * 100,4),
+    qbr = qbr(completions = completions,
+              passes_attempted = passes_attempted,
+              passing_yards = passing_yards,
+              interceptions = interceptions,
+              pass_touchdowns =  pass_touchdowns),
     win = as_factor(win)
-    ) %>%
-  select(-c(a,b,c,d))
+    )
 
 CombinedPlot=ggplot(qbr_2020_JAX, aes(x=win, y=qbr, fill=win)) + geom_boxplot()
 CombinedPlot
 
 ############# QBR OVER TIME ################
-qbr_all <- load_pbp(1999:2020)
+qbr_all <- load_pbp(2020)
 
 qbr_all_filter <- qbr_all %>%
   select(season, week, home_team, away_team, posteam, play_type, result, season_type, third_down_converted, third_down_failed,
@@ -350,34 +313,14 @@ qbr_all_filter <- qbr_all %>%
     result < 0  ~ 0,
     result == 0 ~ .5
     )) %>%
-  mutate(a = ((completions/passes_attempted - .3) * 5),
-         b = ((passing_yards/passes_attempted - 3) * .25),
-         c = ((pass_touchdowns/passes_attempted) * 20),
-         d = (2.375 - (interceptions/passes_attempted * 25))
-         ) %>%
-  mutate(
-    a = case_when(
-    a >= 2.375 ~ 2.375,
-    a >= 0 ~ a,
-    a < 0 ~ 0
-    ), b = case_when(
-    b >= 2.375 ~ 2.375,
-    b >= 0 ~ b,
-    b < 0 ~ 0
-    ), c = case_when(
-    c >= 2.375 ~ 2.375,
-    c >= 0 ~ c,
-    c < 0 ~ 0
-    ), d = case_when(
-    d >= 2.375 ~ 2.375,
-    d >= 0 ~ d,
-    d < 0 ~ 0
-    ),
-    qbr = signif((a + b + c +d)/6 * 100,4),
-    win = as.logical(win),
-    season = as.factor(season)
+  mutate(qbr = qbr(completions = completions,
+                       passes_attempted = passes_attempted,
+                       passing_yards = passing_yards,
+                       interceptions = interceptions,
+                       pass_touchdowns =  pass_touchdowns),
+         win = as.logical(win),
+         season = as.factor(season)
     ) %>%
-  select(-c(a,b,c,d)) %>%
   filter(!is.na(win))
 
 ggplot(qbr_all_filter, aes(x=season, y= qbr, fill=win)) +
@@ -395,14 +338,15 @@ ggplot(qbr_all_filter, aes(x=season, y= qbr, fill=win)) +
 ######### PREDICTIVE MODEL ###########
 
 ########### TRAIN #################
-library(zoo)
-model_2019 <- load_pbp(2017:2019)
+model_fav <- load_pbp(2017:2019)
 
 # names(model_2019)
 
-train <- model_2019 %>% 
+# Filter function for the train data
+train <- model_fav %>% 
   select(home_team, away_team, season, week, div_game, result, spread_line,
-         passing_yards, pass_attempt, posteam, sack) %>% 
+         passing_yards, pass_attempt, pass_touchdown,
+         incomplete_pass, posteam, interception, sack) %>% 
   filter(week %in% c(1:17),
          !is.na(posteam),
          season %in% c(2017,2018)) %>% 
@@ -413,62 +357,90 @@ train <- model_2019 %>%
             result = unique(result),
             spread = unique(spread_line),
             sacks = sum(sack, na.rm = TRUE),
+            interceptions = sum(interception, na.rm = TRUE),
+            incompletions = sum(incomplete_pass, na.rm = TRUE),
             passing_yards = sum(passing_yards, na.rm = TRUE),
-            pass_attempts = sum(pass_attempt, na.rm = TRUE)- sacks) %>% 
-  mutate(fav_team = case_when(
-    spread < 0 ~ away_team,
-    spread >= 0 ~ home_team
-  ), spread = case_when(
-    fav_team == away_team ~ -spread,
-    fav_team == home_team ~ spread
-  ),fav_win = case_when(
-    fav_team == away_team & result <= 0 ~ 1,
-    fav_team == away_team & result > 0 ~ 0,
-    fav_team == home_team & result >= 0 ~ 1,
-    fav_team == home_team & result <0 ~ 0
-  ), win = case_when(
-    fav_team == posteam ~ fav_win,
-    fav_team != posteam & fav_win == 0 ~ 1,
-    fav_team != posteam & fav_win == 1 ~ 0
-  ), 
-  cum_pass_yards = lag(cumsum(passing_yards), k = 1, default = 0),
-  avg_pass_yards = cum_pass_yards/(as.numeric(week)-1),
-  cum_pass_attempts = lag(cumsum(pass_attempts), k = 1, default = 0),
-  avg_pass_attempts = cum_pass_attempts/(as.numeric(week)-1),
-  ) %>%
+            passes_attempted = sum(pass_attempt, na.rm = TRUE)- sacks,
+            pass_touchdowns = sum(pass_touchdown, na.rm = TRUE),
+            completions = passes_attempted - incompletions
+            )%>% 
+  mutate(
+    fav_team = case_when(
+      spread < 0 ~ away_team,
+      spread >= 0 ~ home_team
+      ), 
+    spread = case_when(
+      fav_team == away_team ~ -spread,
+      fav_team == home_team ~ spread
+      ),
+    fav_win = case_when(
+      fav_team == away_team & result <= 0 ~ 1,
+      fav_team == away_team & result > 0 ~ 0,
+      fav_team == home_team & result >= 0 ~ 1,
+      fav_team == home_team & result <0 ~ 0
+      ), 
+    win = case_when(
+      fav_team == posteam ~ fav_win,
+      fav_team != posteam & fav_win == 0 ~ 1,
+      fav_team != posteam & fav_win == 1 ~ 0
+      ), 
+    cum_pass_yards = lag(cumsum(passing_yards), k = 1, default = 0), 
+    cum_pass_attempts = lag(cumsum(passes_attempted), k = 1, default = 0),
+    qbr = qbr(completions = completions,
+              passing_yards = passing_yards,
+              pass_touchdowns = pass_touchdowns,
+              interceptions = interceptions,
+              passes_attempted = passes_attempted)
+    
+    ) %>%
   ungroup(season) %>% 
   mutate(
+    previous = season - 1,
     winning_form_5 = lag(rollsum(win, 5, align = "right", all.x = TRUE ,fill = NA), k = 1),
     winning_form_10 = lag(rollsum(win, 10, align = "right", all.x = TRUE ,fill = NA), k = 1),
-  ) %>% 
-  select(season, week, fav_team, everything()) %>% 
-  filter(!(season == 2017 & week %in% c(1:11))) %>% 
-  mutate( 
-   previous = season - 1,
-   ypa = case_when(
-    week %in% c(2:17) ~ cum_pass_yards/cum_pass_attempts,
-    week == 1 ~  max(cum_pass_yards[season %in% previous])
+    ypa = case_when(
+      week %in% c(2:17) ~ cum_pass_yards/cum_pass_attempts,
+      week == 1 ~  mean(cum_pass_yards[season %in% previous])/
+                   mean(cum_pass_attempts[season %in% previous])
+      ),
+    avg_pass_yards = case_when(
+      week %in% c(2:17) ~ cum_pass_yards/(as.numeric(week)-1),
+      week == 1  ~ max(cum_pass_yards[season %in% previous])/16),
+    
+    avg_pass_attempts = case_when(
+      week %in% c(2:17) ~ cum_pass_attempts/(as.numeric(week)-1),
+      week == 1 ~ max(cum_pass_attempts[season %in% previous]/16)
+    ),
+    qbr_form_5 = case_when(
+      week %in% c(2:17) ~ lag(rollsum(qbr, 5, align = "right", all.x = TRUE ,fill = NA), k = 1) / 5,
+      week == 1 ~ mean(qbr[season %in% previous])
     )
-   )%>% 
+  ) %>% 
+  filter(!(season == 2017 & week %in% c(1:11))) %>% 
+  select(season, week, fav_team, posteam, home_team, away_team, result, spread, 
+         fav_win, win, everything()) %>% 
+  select(-previous) %>% 
   arrange(season, week)
 
-train_favorites <- train %>% 
+train <- train %>% 
   filter(fav_team == posteam)
 
 train_unders <- train %>% 
   filter(fav_team != posteam)
 
-train_favorites$under_form <- train_unders$winning_form_10
-
+train$under_form_5 <- train_unders$winning_form_5
+train$under_form_10 <- train_under$winning_form_10
+train$under_qbr_form_5 <- train_unders$qbr_form_5
 ######## TESTING ###########
 
-log.model <- glm(fav_win ~ ypa + winning_form_10 + under_form, 
-                 family = binomial, data = train_favorites)
+log.model <- glm(fav_win ~ spread + qbr_form_5 + under_qbr_form_5 + div_game, 
+                 family = binomial, data = train)
 summary(log.model)
 
-test <- model_2019 %>% 
+test <- model_fav %>% 
   select(home_team, away_team, season, week, div_game, result, spread_line,
-         passing_yards, pass_attempt, posteam) %>% 
+         passing_yards, pass_attempt, pass_touchdown,
+         incomplete_pass, posteam, interception, sack) %>% 
   filter(week %in% c(1:17),
          !is.na(posteam)) %>% 
   group_by(season, posteam, week ) %>% 
@@ -477,64 +449,98 @@ test <- model_2019 %>%
             div_game = unique(div_game),
             result = unique(result),
             spread = unique(spread_line),
+            sacks = sum(sack, na.rm = TRUE),
+            interceptions = sum(interception, na.rm = TRUE),
+            incompletions = sum(incomplete_pass, na.rm = TRUE),
             passing_yards = sum(passing_yards, na.rm = TRUE),
-            pass_attempts = sum(pass_attempt, na.rm = TRUE)) %>% 
-  mutate(fav_team = case_when(
-    spread < 0 ~ away_team,
-    spread >= 0 ~ home_team
-  ), spread = case_when(
-    fav_team == away_team ~ -spread,
-    fav_team == home_team ~ spread
-  ),fav_win = case_when(
-    fav_team == away_team & result <= 0 ~ 1,
-    fav_team == away_team & result > 0 ~ 0,
-    fav_team == home_team & result >= 0 ~ 1,
-    fav_team == home_team & result <0 ~ 0
-  ), win = case_when(
-    fav_team == posteam ~ fav_win,
-    fav_team != posteam & fav_win == 0 ~ 1,
-    fav_team != posteam & fav_win == 1 ~ 0
-  ), 
-  cum_pass_yards = lag(cumsum(passing_yards), k = 1, default = 0),
-  avg_pass_yards = cum_pass_yards/(as.numeric(week)-1),
-  cum_pass_attempts = lag(cumsum(pass_attempts), k = 1, default = 0),
-  avg_pass_attempts = cum_pass_attempts/(as.numeric(week)-1),
-  ypa = cum_pass_yards/cum_pass_attempts
+            passes_attempted = sum(pass_attempt, na.rm = TRUE)- sacks,
+            pass_touchdowns = sum(pass_touchdown, na.rm = TRUE),
+            completions = passes_attempted - incompletions
+  )%>% 
+  mutate(
+    fav_team = case_when(
+      spread < 0 ~ away_team,
+      spread >= 0 ~ home_team
+    ), 
+    spread = case_when(
+      fav_team == away_team ~ -spread,
+      fav_team == home_team ~ spread
+    ),
+    fav_win = case_when(
+      fav_team == away_team & result <= 0 ~ 1,
+      fav_team == away_team & result > 0 ~ 0,
+      fav_team == home_team & result >= 0 ~ 1,
+      fav_team == home_team & result <0 ~ 0
+    ), 
+    win = case_when(
+      fav_team == posteam ~ fav_win,
+      fav_team != posteam & fav_win == 0 ~ 1,
+      fav_team != posteam & fav_win == 1 ~ 0
+    ), 
+    cum_pass_yards = lag(cumsum(passing_yards), k = 1, default = 0),
+    avg_pass_yards = cum_pass_yards/(as.numeric(week)-1),
+    cum_pass_attempts = lag(cumsum(passes_attempted), k = 1, default = 0),
+    avg_pass_attempts = cum_pass_attempts/(as.numeric(week)-1),
+    qbr = qbr(completions = completions,
+              passing_yards = passing_yards,
+              pass_touchdowns = pass_touchdowns,
+              interceptions = interceptions,
+              passes_attempted = passes_attempted)
+    
   ) %>%
   ungroup(season) %>% 
   mutate(
+    previous = season - 1,
     winning_form_5 = lag(rollsum(win, 5, align = "right", all.x = TRUE ,fill = NA), k = 1),
-    winning_form_10 = lag(rollsum(win, 10, align = "right", all.x = TRUE ,fill = NA), k = 1)
+    winning_form_10 = lag(rollsum(win, 10, align = "right", all.x = TRUE ,fill = NA), k = 1),
+    ypa = case_when(
+      week %in% c(2:17) ~ cum_pass_yards/cum_pass_attempts,
+      week == 1 ~  mean(cum_pass_yards[season %in% previous])/
+        mean(cum_pass_attempts[season %in% previous])
+    ),
+    avg_pass_yards = case_when(
+      week %in% c(2:17) ~ cum_pass_yards/(as.numeric(week)-1),
+      week == 1  ~ max(cum_pass_yards[season %in% previous])/16),
+    
+    avg_pass_attempts = case_when(
+      week %in% c(2:17) ~ cum_pass_attempts/(as.numeric(week)-1),
+      week == 1 ~ max(cum_pass_attempts[season %in% previous]/16)
+    ),
+    qbr_form_5 = case_when(
+      week %in% c(2:17) ~ lag(rollsum(qbr, 5, align = "right", all.x = TRUE ,fill = NA), k = 1) / 5,
+      week == 1 ~ mean(qbr[season %in% previous])
+    )
   ) %>% 
-  select(season, week, fav_team, everything()) %>% 
-  filter(
-         season == 2019) %>% 
+  filter(season == 2019) %>% 
+  select(season, week, fav_team, posteam, home_team, away_team, result, spread, 
+         fav_win, win, everything()) %>% 
+  select(-previous) %>% 
   arrange(season, week)
+
 test
 
-test_favorites <- test %>% 
+test <- test %>% 
   filter(fav_team == posteam)
 
 test_unders <- test %>% 
   filter(fav_team != posteam)
 
-test_favorites$under_form <- test_unders$winning_form_10
+test$under_form <- test_unders$winning_form_10
+test$under_qbr_form_5 <- test_unders$qbr_form_5
 
 
 
-library(gains)
-library(faraway)
 # Logistic 
-train_favorites$logprobs <- predict(log.model, train_favorites, type = "response")
+test$logprobs <- predict(log.model, test, type = "response")
 
-train_favorites <- train_favorites %>% 
+test <- test %>% 
   ungroup() %>% 
-  mutate(spread_performance = cumsum(fav_win)/as.numeric(row.names(train_favorites)),
+  mutate(spread_performance = cumsum(fav_win)/as.numeric(row.names(test)),
          mod_pred = case_when(
            logprobs > .5 ~ 1,
            logprobs <= .5 ~ 0
          ),
-         model_performance = cumsum(mod_pred == fav_win)/as.numeric(row.names(train_favorites))
+         model_performance = cumsum(mod_pred == fav_win)/as.numeric(row.names(test))
          )
   
 
@@ -550,4 +556,5 @@ points(log.gains$depth, log.gains$cume.lift, col = "blue")
 lines(log.gains$depth, log.gains$cume.lift, col = "blue")
 title("Logisitic Lift Plot")
 abline(h=100)
+
 

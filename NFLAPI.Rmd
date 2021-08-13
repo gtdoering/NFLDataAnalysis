@@ -105,10 +105,10 @@ offense %>%
   scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
   scale_x_continuous(breaks = scales::pretty_breaks(n = 10))
 ```
-This chunk of code creates a ggplot for the 2020 season based off the amount of offense 
-that a team compiled. The size of the point corresponds to the amount of wins that the
-team got in the 2020 season. The label includes the misery score for the team based off
-their rushing and passing yards combined. The color of the point is also the team color.
+
+This plot shows us the number of passing yards and the number of rushing yards for a team in the 2020
+season. The size of the point on the plot corresponds to the number of wins that the team had in 2020. 
+The color of the point corresponds to the team's color. 
 
 ```{r}
 pbp <- load_pbp(1999:2020)
