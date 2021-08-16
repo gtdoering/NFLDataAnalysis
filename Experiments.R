@@ -10,91 +10,7 @@ source("functions/misery.R")
 options(scipen = 9999)
 
 
-data <- load_pbp(2019)
-View(data)
 
-data %>% 
-  filter(posteam == 'JAX' & pass == 1) %>%
-  select(posteam, desc, rush, pass, name, passer, rusher, receiver) %>% 
-  head(10)
-
-down4 <- data %>% 
-  filter(down == 4 & special == 0) %>%
-  filter(fourth_down_converted != 0 | fourth_down_failed != 0) %>% 
-  select(down, ydstogo, desc, fourth_down_converted, fourth_down_failed) 
-head(down4)
-down4$fourth_down_converted <- as.logical(down4$fourth_down_converted)
-ggplot(Down4, aes(x=fourth_down_converted, y=ydstogo, group = fourth_down_converted,
-                  fill = fourth_down_converted)) + 
-  geom_boxplot()
-
-
-
-pbp_rp <- data %>%
-  filter(rush == 1 | pass == 1, !is.na(epa))
-pbp_rp %>%
-  filter(posteam == "DAL", rush == 1) %>%
-  group_by(rusher) %>%
-  summarize(
-    mean_epa = mean(epa), success_rate = mean(success), ypc = mean(yards_gained), plays = n()
-  ) %>%
-  arrange(-mean_epa) %>%
-  filter(plays > 20)
-
-pbp <- load_pbp(2016:2020)
-pbp %>%
-  group_by(season) %>%
-  summarize(n = n())
-
-pbp %>%
-  group_by(play_type) %>%
-  summarize(n = n())
-
-qbs <- pbp %>%
-  filter(season_type == "REG", !is.na(epa)) %>%
-  group_by(id, name) %>%
-  summarize(
-    epa = mean(qb_epa),
-    cpoe = mean(cpoe, na.rm = T),
-    n_dropbacks = sum(pass),
-    n_plays = n(),
-    team = last(posteam)
-  ) %>%
-  ungroup() %>%
-  filter(n_dropbacks > 100 & n_plays > 1000)
-qbs
-
-qbs <- qbs %>%
-  left_join(teams_colors_logos, by = c('team' = 'team_abbr'))
-
-qbs %>%
-  ggplot(aes(x = cpoe, y = epa)) +
-  #horizontal line with mean EPA
-  geom_hline(yintercept = mean(qbs$epa), color = "red", linetype = "dashed", alpha=0.5) +
-  #vertical line with mean CPOE
-  geom_vline(xintercept =  mean(qbs$cpoe), color = "red", linetype = "dashed", alpha=0.5) +
-  #add points for the QBs with the right colors
-  #cex controls point size and alpha the transparency (alpha = 1 is normal)
-  geom_point(color = qbs$team_color, cex=qbs$n_plays / 350, alpha = .6) +
-  #add names using ggrepel, which tries to make them not overlap
-  geom_text_repel(aes(label=name)) +
-  #add a smooth line fitting cpoe + epa
-  stat_smooth(geom='line', alpha=0.5, se=FALSE, method='lm')+
-  #titles and caption
-  labs(x = "Completion % above expected (CPOE)",
-       y = "EPA per play (passes, rushes, and penalties)",
-       title = "Quarterback Efficiency, 2015 - 2019",
-       caption = "Data: @nflfastR") +
-  #uses the black and white ggplot theme
-  theme_bw() +
-  #center title with hjust = 0.5
-  theme(
-    plot.title = element_text(size = 14, hjust = 0.5, face = "bold")
-  ) +
-  #make ticks look nice
-  #if this doesn't work, `install.packages('scales')`
-  scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
-  scale_x_continuous(breaks = scales::pretty_breaks(n = 10))
 
 
 ###### EXPERIMENTS #####
@@ -141,9 +57,7 @@ offense %>%
   geom_vline(xintercept =  mean(offense$rushing_yards), color = "red", linetype = "dashed", alpha=0.5) +
   #add points for the teams with the right colors
   #cex controls point size and alpha the transparency (alpha = 1 is normal)
-  geom_point(color = offense$team_color, cex= offense$wins, alpha = .6)+
-  #add names using ggrepel, which tries to make them not overlap
-  geom_text_repel(aes(label=team)) +
+  ggimage::geom_image(aes(image = team_logo_espn), size = offense$wins / 250, asp = 16 / 9) +
   #add a smooth line fitting cpoe + epa
   stat_smooth(geom='line', alpha=0.5, se=FALSE, method='lm')+
   #titles and caption
@@ -422,15 +336,15 @@ train <- model_fav %>%
   select(-previous) %>% 
   arrange(season, week)
 
+train_under <- train %>% 
+  filter(fav_team != posteam)
+
 train <- train %>% 
   filter(fav_team == posteam)
 
-train_unders <- train %>% 
-  filter(fav_team != posteam)
-
-train$under_form_5 <- train_unders$winning_form_5
+train$under_form_5 <- train_under$winning_form_5
 train$under_form_10 <- train_under$winning_form_10
-train$under_qbr_form_5 <- train_unders$qbr_form_5
+train$under_qbr_form_5 <- train_under$qbr_form_5
 ######## TESTING ###########
 
 log.model <- glm(fav_win ~ spread + qbr_form_5 + under_qbr_form_5 + div_game, 
@@ -517,16 +431,15 @@ test <- model_fav %>%
   select(-previous) %>% 
   arrange(season, week)
 
-test
+test_under <- test %>% 
+  filter(fav_team != posteam)
+
 
 test <- test %>% 
   filter(fav_team == posteam)
 
-test_unders <- test %>% 
-  filter(fav_team != posteam)
-
-test$under_form <- test_unders$winning_form_10
-test$under_qbr_form_5 <- test_unders$qbr_form_5
+test$under_form <- test_under$winning_form_10
+test$under_qbr_form_5 <- test_under$qbr_form_5
 
 
 
@@ -543,11 +456,12 @@ test <- test %>%
          model_performance = cumsum(mod_pred == fav_win)/as.numeric(row.names(test))
          )
   
-
+test <- test %>% 
+  arrange(week, desc(logprobs))
 
 
 test$fav_win <- as.numeric(test$fav_win)
-log.gains <- gains(test$fav_win, logprobs, groups = 6)
+log.gains <- gains(test$fav_win, test$logprobs, groups = 6)
 log.gains
 plot(log.gains, ylim = c(0,1))
 plot(log.gains$depth, log.gains$lift, col = "red", xlab = "Depth", ylab = "Lift", xlim = c(0,105), ylim = c(0, 180))
